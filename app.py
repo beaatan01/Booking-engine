@@ -185,4 +185,3 @@ if file:
     except Exception as e:
         st.error("❌ Something went wrong")
         st.text(str(e))
-``
