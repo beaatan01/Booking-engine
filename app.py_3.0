@@ -1,0 +1,177 @@
+import streamlit as st
+import pandas as pd
+
+st.set_page_config(page_title="Booking Engine", layout="wide")
+st.title("📊 Booking Reconciliation Engine")
+
+month_map = {
+    "January": "-01-",
+    "February": "-02-",
+    "March": "-03-",
+    "April": "-04-",
+    "May": "-05-",
+    "June": "-06-",
+    "July": "-07-",
+    "August": "-08-",
+    "September": "-09-",
+    "October": "-10-",
+    "November": "-11-",
+    "December": "-12-"
+}
+
+month = st.selectbox("Select Month", list(month_map.keys()))
+file = st.file_uploader("Upload Excel File", type=["xlsx"])
+
+def normalize(name):
+    return " ".join(str(name).strip().upper().split())
+
+def number_to_words(n):
+    words = {
+        0: "zero", 1: "one", 2: "two", 3: "three",
+        4: "four", 5: "five", 6: "six", 7: "seven",
+        8: "eight", 9: "nine", 10: "ten",
+        11: "eleven", 12: "twelve"
+    }
+    return words.get(n, str(n))
+
+if file:
+    try:
+        df = pd.read_excel(file, engine="openpyxl")
+
+        # ---------------- SAFE COLUMN STANDARDIZATION ----------------
+        df.columns = [str(col).strip().upper() for col in df.columns]
+
+        columns = df.columns.tolist()
+
+        def find_column(keyword):
+            for col in columns:
+                if keyword in col:
+                    return col
+            return None
+
+        account_col = find_column("ACCOUNT")
+        close_col = find_column("CLOSE")
+        type_col = find_column("TYPE")
+        rgo_col = find_column("RGO")
+
+        avc_col = None
+        for col in columns:
+            if "AVC" in col:
+                avc_col = col
+                break
+
+        # ✅ SAFETY CHECK
+        required = {
+            "Account Name": account_col,
+            "Close Date": close_col,
+            "Type": type_col,
+            "RGO Product": rgo_col,
+            "AVC": avc_col
+        }
+
+        missing = [k for k,v in required.items() if v is None]
+
+        if missing:
+            st.error(f"❌ Missing columns: {missing}")
+            st.write("Detected columns:", columns)
+            st.stop()
+
+        # Rename
+        df = df.rename(columns={
+            account_col: "Account Name",
+            close_col: "Close Date",
+            type_col: "Type",
+            rgo_col: "RGO Product",
+            avc_col: "AVC"
+        })
+
+        # ---------------- CLEAN DATA ----------------
+
+        df["Close Date"] = df["Close Date"].astype(str)
+
+        df = df[df["Close Date"].str.contains(month_map[month], na=False)]
+
+        df = df[df["Type"].astype(str).str.strip() != "True-up"]
+
+        df["RGO Product"] = df["RGO Product"].astype(str).str.strip()
+
+        valid_rgo = ["Clinical", "CSG", "Pharmacy", "PPO", "Specialty"]
+        df = df[df["RGO Product"].isin(valid_rgo)]
+
+        df["RGO Product"] = df["RGO Product"].str.upper()
+        df["Account Name"] = df["Account Name"].apply(normalize)
+
+        business_units = ["CLINICAL", "CSG", "PHARMACY", "PPO", "SPECIALTY"]
+
+        results = {}
+
+        # ---------------- MAIN OUTPUT ----------------
+
+        for bu in business_units:
+            st.subheader(bu)
+
+            subset = df[df["RGO Product"] == bu]
+
+            if len(subset) == 0:
+                st.write("Bookings: 0")
+                st.write("Summed total bookings: $0")
+                st.write("Top highest bookings: (none)")
+                results[bu] = {"count": 0, "total": 0, "top3": pd.Series(dtype=float)}
+                continue
+
+            grouped = subset.groupby("Account Name")["AVC"].sum()
+
+            count = len(grouped)
+            total = grouped.sum()
+            top3 = grouped.sort_values(ascending=False).head(3)
+
+            st.write(f"Bookings: {count}")
+            st.write(f"Summed total bookings: ${total:,.2f}")
+
+            top_df = top3.reset_index()
+            top_df.columns = ["Account Name", "AVC"]
+            st.dataframe(top_df)
+
+            results[bu] = {"count": count, "total": total, "top3": top3}
+
+        # ---------------- SUMMARY ----------------
+
+        st.markdown("## Summary")
+
+        summary_lines = []
+
+        for bu in business_units:
+            data = results[bu]
+            count = data["count"]
+            total = data["total"]
+            top3 = data["top3"]
+
+            if count == 0:
+                st.markdown(f"**{bu.title()}:** No bookings in {month}")
+                summary_lines.append(f"{bu.title()}: No bookings in {month}")
+            else:
+                names = top3.index.tolist()
+
+                if len(names) == 1:
+                    top_names = names[0]
+                elif len(names) == 2:
+                    top_names = f"{names[0]} and {names[1]}"
+                else:
+                    top_names = f"{names[0]}, {names[1]}, and {names[2]}"
+
+                text = f"{number_to_words(count).capitalize()} bookings in {month}, totaling ${total:,.2f}, led by {top_names}"
+
+                st.markdown(f"**{bu.title()}:** {text}")
+                summary_lines.append(f"{bu.title()}: {text}")
+
+        # ---------------- COPY ----------------
+
+        full_summary = "Summary\n" + "\n".join(summary_lines)
+
+        st.markdown("### Copy Summary")
+        st.code(full_summary)
+        st.caption("Copy and paste into email or report")
+
+    except Exception as e:
+        st.error("❌ App failed to process file")
+        st.write("Error details:", str(e))
